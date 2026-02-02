@@ -1,1 +1,125 @@
+import os
+import numpy as np
+import pandas as pd
+import torch
 
+from datasets import Dataset
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, roc_auc_score
+
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer
+)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+csv_path = "task dataset/BBBP.csv"
+df = pd.read_csv(csv_path)
+
+print("Columns:", list(df.columns))
+print(df.head(3))
+
+# smiles 컬럼 자동 찾기
+smiles_candidates = ["smiles", "SMILES", "canonical_smiles", "mol", "text"]
+label_candidates  = ["label", "labels", "p_np", "p_np ", "target", "y", "BBBP", "bbbp"]
+
+smiles_col = next((c for c in smiles_candidates if c in df.columns), None)
+label_col  = next((c for c in label_candidates  if c in df.columns), None)
+
+if smiles_col is None or label_col is None:
+    raise ValueError(
+        f"Could not infer columns. Found smiles_col={smiles_col}, label_col={label_col}. "
+        f"Please rename columns to smiles/text and label/p_np."
+    )
+
+df = df.rename(columns={smiles_col: "text", label_col: "label"})[["text", "label"]].dropna()
+df["label"] = df["label"].astype(int)
+
+print("Label distribution:\n", df["label"].value_counts())
+print("N =", len(df))
+
+
+train_df, temp_df = train_test_split(
+    df,
+    test_size=0.2,
+    stratify=df["label"],
+    random_state=42
+)
+
+valid_df, test_df = train_test_split(
+    temp_df,
+    test_size=0.5,
+    stratify=temp_df["label"],
+    random_state=42
+)
+
+train_ds = Dataset.from_pandas(train_df.reset_index(drop=True))
+valid_ds = Dataset.from_pandas(valid_df.reset_index(drop=True))
+test_ds  = Dataset.from_pandas(test_df.reset_index(drop=True))
+
+print("Sizes:", len(train_ds), len(valid_ds), len(test_ds))
+
+
+model_name = "seyonec/ChemBERTa-zinc-base-v1"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+model = AutoModelForSequenceClassification.from_pretrained(
+    model_name,
+    num_labels=2
+).to(device)
+
+def tokenize(batch):
+    return tokenizer(
+        batch["text"],
+        padding="max_length",
+        truncation=True,
+        max_length=128
+    )
+
+train_ds_tok = train_ds.map(tokenize, batched=True, remove_columns=["text"])
+valid_ds_tok = valid_ds.map(tokenize, batched=True, remove_columns=["text"])
+test_ds_tok  = test_ds.map(tokenize, batched=True, remove_columns=["text"])
+
+train_ds_tok.set_format("torch")
+valid_ds_tok.set_format("torch")
+test_ds_tok.set_format("torch")
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    probs = torch.softmax(torch.tensor(logits), dim=1)[:, 1].numpy()
+    preds = np.argmax(logits, axis=1)
+    return {
+        "accuracy": accuracy_score(labels, preds),
+        "roc_auc": roc_auc_score(labels, probs)
+    }
+
+training_args = TrainingArguments(
+    output_dir="./chemberta_bbbp",
+    learning_rate=2e-5,
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=64,
+    num_train_epochs=10,
+    weight_decay=0.01,
+    load_best_model_at_end=False,
+    fp16=True,
+    logging_steps=50,
+    report_to="none"
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_ds_tok,
+    eval_dataset=valid_ds_tok,
+    compute_metrics=compute_metrics
+)
+
+trainer.train()
+
+print("=== Test ===")
+trainer.evaluate(test_ds_tok)
