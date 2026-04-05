@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
+venv/
+.env/
+
+# Data / Models
+data/
+*.pt
+*.pth
+*.ckpt
+
+# External repos
+external/
+graph-gpt/
+graph-gpt-main.zip
+
+# Logs / outputs
+logs/
+outputs/
+artifacts/
+
+# OS
+.DS_Store
+
+!graphgpt_src/
+!graphgpt_src/**
