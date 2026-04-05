@@ -26,3 +26,6 @@ artifacts/
 
 # OS
 .DS_Store
+
+!graphgpt_src/
+!graphgpt_src/**
